@@ -1,16 +1,13 @@
 FROM php:8.2-fpm-alpine
 
-# 1. Instalar dependencias de MySQL y Nginx
+# 1. Instalar dependencias
 RUN docker-php-ext-install pdo pdo_mysql
 RUN apk add --no-cache nginx
 
-# 2. Crear carpeta para Nginx
+# 2. Configurar Nginx
 RUN mkdir -p /run/nginx
-
-# 3. Configurar Nginx directamente (Sin usar variables externas en el archivo)
 RUN echo 'server { \
     listen 80; \
-    listen [::]:80; \
     server_name _; \
     root /var/www/html; \
     index index.php index.html; \
@@ -20,16 +17,19 @@ RUN echo 'server { \
     location ~ \.php$ { \
         include fastcgi_params; \
         fastcgi_pass 127.0.0.1:9000; \
-        fastcgi_index index.php; \
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; \
     } \
 }' > /etc/nginx/http.d/default.conf
 
-# 4. Preparar archivos
+# 3. Preparar archivos
 WORKDIR /var/www/html
 COPY . /var/www/html/
 RUN chown -R www-data:www-data /var/www/html
 
-# 5. EL TRUCO: Cambiar el 80 por el $PORT justo al arrancar
-# Usamos comillas simples para que no falle el comando sed
-CMD sh -c "sed -i 's/listen 80;/listen '${PORT}';/g' /etc/nginx/http.d/default.conf && php-fpm -D && nginx -g 'daemon off;'"
+# 4. EL CAMBIO: Forzamos a que PHP-FPM escuche en el puerto correcto
+RUN sed -i 's/listen = \/usr\/local\/var\/run\/php-fpm.sock/listen = 127.0.0.1:9000/g' /usr/local/etc/php-fpm.d/www.conf
+
+EXPOSE ${PORT}
+
+# Comando de arranque garantizado
+CMD sh -c "sed -i 's/listen 80;/listen '${PORT}';/g' /etc/apache2/sites-available/000-default.conf /etc/apache2/ports.conf /etc/nginx/http.d/default.conf && php-fpm -D && nginx -g 'daemon off;'"
