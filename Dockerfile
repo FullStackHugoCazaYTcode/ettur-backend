@@ -1,58 +1,37 @@
-FROM php:8.2-fpm-alpine
+FROM php:8.2-apache
 
-# 1. Instalar extensiones y Nginx
+# Instalar extensión MySQL
 RUN docker-php-ext-install pdo pdo_mysql
-RUN apk add --no-cache nginx
 
-# 2. Crear directorios necesarios
-RUN mkdir -p /run/nginx /var/www/html/uploads
+# Habilitar mod_rewrite y headers
+RUN a2enmod rewrite headers
 
-# 3. Configurar Nginx
-RUN echo 'server { \
-    listen 80; \
-    server_name _; \
-    root /var/www/html; \
-    index index.php index.html; \
-    client_max_body_size 10M; \
-    \
-    location / { \
-        try_files $uri $uri/ /index.php?$query_string; \
-    } \
-    \
-    location ~ \.php$ { \
-        include fastcgi_params; \
-        fastcgi_pass 127.0.0.1:9000; \
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; \
-        fastcgi_read_timeout 300; \
-    } \
-    \
-    location ~ /\.(env|git|htaccess) { \
-        deny all; \
-    } \
-}' > /etc/nginx/http.d/default.conf
+# Configurar PHP
+RUN echo "upload_max_filesize = 10M" > /usr/local/etc/php/conf.d/custom.ini && \
+    echo "post_max_size = 12M" >> /usr/local/etc/php/conf.d/custom.ini && \
+    echo "display_errors = Off" >> /usr/local/etc/php/conf.d/custom.ini && \
+    echo "date.timezone = America/Lima" >> /usr/local/etc/php/conf.d/custom.ini
 
-# 4. Copiar proyecto
-WORKDIR /var/www/html
+# Permitir .htaccess override
+RUN sed -i 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf
+
+# Copiar proyecto al directorio de Apache
 COPY . /var/www/html/
 
-# 5. Permisos - usar nobody (existe en Alpine)
-RUN chown -R nobody:nobody /var/www/html && \
+# Crear carpeta uploads y permisos
+RUN mkdir -p /var/www/html/uploads && \
+    chown -R www-data:www-data /var/www/html && \
     chmod -R 755 /var/www/html && \
     chmod -R 777 /var/www/html/uploads
 
-# 6. Configurar PHP-FPM para escuchar en 127.0.0.1:9000
-# Y usar usuario nobody (compatible con Alpine)
-RUN sed -i 's|listen = .*|listen = 127.0.0.1:9000|g' /usr/local/etc/php-fpm.d/zz-docker.conf && \
-    sed -i 's|user = www-data|user = nobody|g' /usr/local/etc/php-fpm.d/www.conf && \
-    sed -i 's|group = www-data|group = nobody|g' /usr/local/etc/php-fpm.d/www.conf
-
-# 7. Configurar PHP
-RUN echo "upload_max_filesize = 10M" > /usr/local/etc/php/conf.d/uploads.ini && \
-    echo "post_max_size = 12M" >> /usr/local/etc/php/conf.d/uploads.ini && \
-    echo "display_errors = Off" >> /usr/local/etc/php/conf.d/uploads.ini && \
-    echo "date.timezone = America/Lima" >> /usr/local/etc/php/conf.d/uploads.ini
+# Railway inyecta $PORT - Apache debe escuchar ahi
+# Usamos un script de inicio para reemplazar el puerto
+RUN echo '#!/bin/bash\n\
+sed -i "s/Listen 80/Listen ${PORT:-80}/g" /etc/apache2/ports.conf\n\
+sed -i "s/:80/:${PORT:-80}/g" /etc/apache2/sites-available/000-default.conf\n\
+apache2-foreground' > /usr/local/bin/start.sh && \
+    chmod +x /usr/local/bin/start.sh
 
 EXPOSE 80
 
-# 8. Arranque: Reemplazar puerto 80 por $PORT de Railway, iniciar PHP-FPM y Nginx
-CMD sh -c "sed -i \"s/listen 80;/listen ${PORT:-80};/g\" /etc/nginx/http.d/default.conf && php-fpm -D && nginx -g 'daemon off;'"
+CMD ["/usr/local/bin/start.sh"]
