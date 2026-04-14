@@ -17,13 +17,19 @@ COPY . /var/www/html/
 RUN mkdir -p /var/www/html/uploads && \
     chmod -R 777 /var/www/html/uploads
 
-# Router PHP para manejar las rutas (reemplaza .htaccess)
+# Router PHP - ahora permite acceso directo a archivos .php que existen
 RUN printf '<?php\n\
 $uri = parse_url($_SERVER["REQUEST_URI"], PHP_URL_PATH);\n\
 $file = __DIR__ . $uri;\n\
-// Servir archivos estáticos si existen\n\
+// Si el archivo existe, servirlo directamente\n\
 if ($uri !== "/" && file_exists($file) && is_file($file)) {\n\
     $ext = pathinfo($file, PATHINFO_EXTENSION);\n\
+    // Si es PHP, ejecutarlo\n\
+    if ($ext === "php") {\n\
+        require $file;\n\
+        return true;\n\
+    }\n\
+    // Archivos estáticos\n\
     $mimes = ["jpg"=>"image/jpeg","jpeg"=>"image/jpeg","png"=>"image/png","webp"=>"image/webp","css"=>"text/css","js"=>"application/javascript","json"=>"application/json"];\n\
     if (isset($mimes[$ext])) header("Content-Type: " . $mimes[$ext]);\n\
     readfile($file);\n\
@@ -32,6 +38,8 @@ if ($uri !== "/" && file_exists($file) && is_file($file)) {\n\
 // Todo lo demás va al index.php\n\
 require __DIR__ . "/index.php";\n' > /var/www/html/router.php
 
-EXPOSE ${PORT}
+# Script de inicio
+RUN printf '#!/bin/bash\necho "=== ETTUR Backend ==="\necho "Starting on port: ${PORT:-8080}"\nexec php -S 0.0.0.0:${PORT:-8080} /var/www/html/router.php\n' > /usr/local/bin/start.sh && \
+    chmod +x /usr/local/bin/start.sh
 
-CMD php -S 0.0.0.0:${PORT:-80} /var/www/html/router.php
+CMD ["/usr/local/bin/start.sh"]
