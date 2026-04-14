@@ -3,6 +3,9 @@ FROM php:8.2-apache
 # Instalar extensión MySQL
 RUN docker-php-ext-install pdo pdo_mysql
 
+# Corregir conflicto de MPM (desactivar event, usar prefork)
+RUN a2dismod mpm_event && a2enmod mpm_prefork
+
 # Habilitar mod_rewrite y headers
 RUN a2enmod rewrite headers
 
@@ -15,7 +18,7 @@ RUN echo "upload_max_filesize = 10M" > /usr/local/etc/php/conf.d/custom.ini && \
 # Permitir .htaccess override
 RUN sed -i 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf
 
-# Copiar proyecto al directorio de Apache
+# Copiar proyecto
 COPY . /var/www/html/
 
 # Crear carpeta uploads y permisos
@@ -24,12 +27,8 @@ RUN mkdir -p /var/www/html/uploads && \
     chmod -R 755 /var/www/html && \
     chmod -R 777 /var/www/html/uploads
 
-# Railway inyecta $PORT - Apache debe escuchar ahi
-# Usamos un script de inicio para reemplazar el puerto
-RUN echo '#!/bin/bash\n\
-sed -i "s/Listen 80/Listen ${PORT:-80}/g" /etc/apache2/ports.conf\n\
-sed -i "s/:80/:${PORT:-80}/g" /etc/apache2/sites-available/000-default.conf\n\
-apache2-foreground' > /usr/local/bin/start.sh && \
+# Script de inicio que configura el puerto de Railway
+RUN printf '#!/bin/bash\nsed -i "s/Listen 80/Listen ${PORT:-80}/g" /etc/apache2/ports.conf\nsed -i "s/:80/:${PORT:-80}/g" /etc/apache2/sites-available/000-default.conf\napache2-foreground\n' > /usr/local/bin/start.sh && \
     chmod +x /usr/local/bin/start.sh
 
 EXPOSE 80
