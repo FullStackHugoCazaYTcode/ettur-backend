@@ -1,16 +1,7 @@
-FROM php:8.2-apache
+FROM php:8.2-cli
 
 # Instalar extensión MySQL
 RUN docker-php-ext-install pdo pdo_mysql
-
-# FORZAR desactivación de mpm_event (eliminar archivos directamente)
-RUN rm -f /etc/apache2/mods-enabled/mpm_event.conf \
-          /etc/apache2/mods-enabled/mpm_event.load && \
-    ln -sf /etc/apache2/mods-available/mpm_prefork.conf /etc/apache2/mods-enabled/mpm_prefork.conf && \
-    ln -sf /etc/apache2/mods-available/mpm_prefork.load /etc/apache2/mods-enabled/mpm_prefork.load
-
-# Habilitar mod_rewrite y headers
-RUN a2enmod rewrite headers
 
 # Configurar PHP
 RUN echo "upload_max_filesize = 10M" > /usr/local/etc/php/conf.d/custom.ini && \
@@ -18,20 +9,29 @@ RUN echo "upload_max_filesize = 10M" > /usr/local/etc/php/conf.d/custom.ini && \
     echo "display_errors = Off" >> /usr/local/etc/php/conf.d/custom.ini && \
     echo "date.timezone = America/Lima" >> /usr/local/etc/php/conf.d/custom.ini
 
-# Permitir .htaccess
-RUN sed -i 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf
-
 # Copiar proyecto
+WORKDIR /var/www/html
 COPY . /var/www/html/
 
-# Permisos
+# Crear carpeta uploads
 RUN mkdir -p /var/www/html/uploads && \
-    chown -R www-data:www-data /var/www/html && \
-    chmod -R 755 /var/www/html && \
     chmod -R 777 /var/www/html/uploads
 
-# Script de inicio - reemplaza puerto 80 por $PORT de Railway
-RUN printf '#!/bin/bash\nsed -i "s/Listen 80/Listen ${PORT:-80}/g" /etc/apache2/ports.conf\nsed -i "s/:80/:${PORT:-80}/g" /etc/apache2/sites-available/000-default.conf\nexec apache2-foreground\n' > /usr/local/bin/start.sh && \
-    chmod +x /usr/local/bin/start.sh
+# Router PHP para manejar las rutas (reemplaza .htaccess)
+RUN printf '<?php\n\
+$uri = parse_url($_SERVER["REQUEST_URI"], PHP_URL_PATH);\n\
+$file = __DIR__ . $uri;\n\
+// Servir archivos estáticos si existen\n\
+if ($uri !== "/" && file_exists($file) && is_file($file)) {\n\
+    $ext = pathinfo($file, PATHINFO_EXTENSION);\n\
+    $mimes = ["jpg"=>"image/jpeg","jpeg"=>"image/jpeg","png"=>"image/png","webp"=>"image/webp","css"=>"text/css","js"=>"application/javascript","json"=>"application/json"];\n\
+    if (isset($mimes[$ext])) header("Content-Type: " . $mimes[$ext]);\n\
+    readfile($file);\n\
+    return true;\n\
+}\n\
+// Todo lo demás va al index.php\n\
+require __DIR__ . "/index.php";\n' > /var/www/html/router.php
 
-CMD ["/usr/local/bin/start.sh"]
+EXPOSE ${PORT}
+
+CMD php -S 0.0.0.0:${PORT:-80} /var/www/html/router.php
