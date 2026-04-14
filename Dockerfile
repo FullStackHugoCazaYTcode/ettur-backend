@@ -1,29 +1,29 @@
 FROM php:8.2-apache
 
-# Install MySQL PDO extension
+# 1. Instalar extensiones de MySQL
 RUN docker-php-ext-install pdo pdo_mysql
 
-# Enable Apache mod_rewrite
+# 2. Habilitar módulos de Apache
 RUN a2enmod rewrite headers
 
-# Set working directory
+# --- ESTA ES LA PARTE QUE SOLUCIONA EL ERROR ---
+# Desactiva mpm_event y mpm_worker, y asegura que mpm_prefork esté activo
+RUN a2dismod mpm_event mpm_worker || true && a2enmod mpm_prefork
+# -----------------------------------------------
+
 WORKDIR /var/www/html
 
-# Copy application files
 COPY . /var/www/html/
 
-# Create uploads directory
 RUN mkdir -p /var/www/html/uploads && \
     chown -R www-data:www-data /var/www/html/uploads && \
     chmod -R 755 /var/www/html/uploads
 
-# Configure Apache
 RUN sed -i 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf
 
-# Set permissions
 RUN chown -R www-data:www-data /var/www/html
 
-# Use PORT env variable from Railway
+# Ajuste para que Apache escuche en el puerto que Railway le asigne
 RUN sed -i 's/80/${PORT}/g' /etc/apache2/sites-available/000-default.conf /etc/apache2/ports.conf
 
 EXPOSE ${PORT}
