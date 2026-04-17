@@ -1,18 +1,25 @@
 <?php
 /**
- * ETTUR - Helpers de respuesta y CORS
+ * ETTUR - Helpers v2.0
  */
 
 function cors_headers() {
-    $origin = CORS_ORIGIN;
+    // Permitir CORS desde cualquier origen
+    $origin = '*';
+    if (defined('CORS_ORIGIN') && CORS_ORIGIN !== '*') {
+        $origin = CORS_ORIGIN;
+    }
+    
     header("Access-Control-Allow-Origin: $origin");
-    header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
-    header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+    header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, PATCH");
+    header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin");
     header("Access-Control-Allow-Credentials: true");
     header("Access-Control-Max-Age: 86400");
 
+    // Responder inmediatamente a preflight OPTIONS
     if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-        http_response_code(204);
+        http_response_code(200);
+        header("Content-Length: 0");
         exit;
     }
 }
@@ -44,7 +51,8 @@ function get_json_input() {
     $input = file_get_contents('php://input');
     $data = json_decode($input, true);
     if (json_last_error() !== JSON_ERROR_NONE) {
-        error_response('JSON inválido', 400);
+        // Si no es JSON, puede ser form-data - devolver array vacío
+        return [];
     }
     return $data ?? [];
 }
@@ -74,7 +82,7 @@ function registrar_auditoria($usuario_id, $accion, $tabla = null, $registro_id =
             get_client_ip()
         ]);
     } catch (Exception $e) {
-        // Silent fail for audit
+        // Silent fail
     }
 }
 
