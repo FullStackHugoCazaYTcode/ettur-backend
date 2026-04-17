@@ -47,6 +47,7 @@ $routes = [
     '/api/tarifas'   => '/api/tarifas/index.php',
     '/api/pagos'     => '/api/pagos/index.php',
     '/api/reportes'  => '/api/reportes/index.php',
+    '/api/config'    => '/api/config/index.php',
 ];
 
 $matched = false;
