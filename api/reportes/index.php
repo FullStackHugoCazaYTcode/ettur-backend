@@ -1,7 +1,6 @@
 <?php
 /**
- * ETTUR - API de Reportes y Liquidación
- * Reportes detallados para Admin y Coadmin
+ * ETTUR - API de Reportes v2.0
  */
 
 require_once __DIR__ . '/../../config/database.php';
@@ -14,83 +13,44 @@ $method = $_SERVER['REQUEST_METHOD'];
 $action = $_GET['action'] ?? '';
 
 switch ($action) {
-    case 'dashboard':
-        handle_dashboard();
-        break;
-    case 'liquidacion':
-        handle_liquidacion();
-        break;
-    case 'liquidacion-trabajador':
-        handle_liquidacion_trabajador();
-        break;
-    case 'auditoria':
-        handle_auditoria();
-        break;
-    case 'resumen-mensual':
-        handle_resumen_mensual();
-        break;
-    default:
-        error_response('Acción no válida', 404);
+    case 'dashboard':           handle_dashboard(); break;
+    case 'liquidacion':         handle_liquidacion(); break;
+    case 'liquidacion-trabajador': handle_liquidacion_trabajador(); break;
+    case 'auditoria':           handle_auditoria(); break;
+    case 'resumen-mensual':     handle_resumen_mensual(); break;
+    default: error_response('Acción no válida', 404);
 }
 
 function handle_dashboard() {
     $user = Auth::requireRole(['admin', 'coadmin']);
     $pdo = db();
-
-    // Totales generales
     $stats = [];
 
-    // Total trabajadores activos
     $stmt = $pdo->query("SELECT COUNT(*) as total FROM usuarios WHERE rol_id = 3 AND activo = 1");
     $stats['trabajadores_activos'] = (int)$stmt->fetch()['total'];
 
-    // Total recaudado este mes
     $mes_actual = date('Y-m-01');
-    $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(monto_pagado), 0) as total 
-        FROM pagos WHERE estado = 'aprobado' AND fecha_pago >= ?
-    ");
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(monto_pagado), 0) as total FROM pagos WHERE estado = 'aprobado' AND fecha_pago >= ?");
     $stmt->execute([$mes_actual]);
     $stats['recaudado_mes'] = (float)$stmt->fetch()['total'];
 
-    // Total recaudado histórico
     $stmt = $pdo->query("SELECT COALESCE(SUM(monto_pagado), 0) as total FROM pagos WHERE estado = 'aprobado'");
     $stats['recaudado_total'] = (float)$stmt->fetch()['total'];
 
-    // Pagos pendientes de validar
     $stmt = $pdo->query("SELECT COUNT(*) as total FROM pagos WHERE estado = 'pendiente'");
     $stats['pagos_pendientes'] = (int)$stmt->fetch()['total'];
 
-    // Pagos aprobados hoy
-    $stmt = $pdo->prepare("
-        SELECT COUNT(*) as total FROM pagos WHERE estado = 'aprobado' AND DATE(fecha_validacion) = CURDATE()
-    ");
-    $stmt->execute();
-    $stats['aprobados_hoy'] = (int)$stmt->fetch()['total'];
-
-    // Últimos 5 pagos registrados
     $stmt = $pdo->query("
         SELECT p.id, p.monto_pagado, p.metodo_pago, p.estado, p.fecha_pago,
                CONCAT(t.nombres, ' ', t.apellidos) as trabajador,
-               pp.anio, pp.mes, pp.quincena
+               pp.anio, pp.mes, pp.quincena as semana, pp.frecuencia,
+               pp.fecha_inicio as periodo_inicio, pp.fecha_fin as periodo_fin
         FROM pagos p
         JOIN usuarios t ON p.trabajador_id = t.id
         JOIN periodos_pago pp ON p.periodo_id = pp.id
         ORDER BY p.fecha_pago DESC LIMIT 5
     ");
     $stats['ultimos_pagos'] = $stmt->fetchAll();
-
-    // Trabajadores con más deuda (top 5)
-    $stmt = $pdo->query("
-        SELECT u.id, CONCAT(u.nombres, ' ', u.apellidos) as nombre, u.dni,
-               tc.fecha_inicio_cobro
-        FROM usuarios u
-        JOIN trabajador_config tc ON u.id = tc.usuario_id
-        WHERE u.rol_id = 3 AND u.activo = 1
-        ORDER BY tc.fecha_inicio_cobro ASC
-        LIMIT 10
-    ");
-    $stats['trabajadores_info'] = $stmt->fetchAll();
 
     success_response($stats);
 }
@@ -102,7 +62,6 @@ function handle_liquidacion() {
     $desde = $_GET['desde'] ?? date('Y-01-01');
     $hasta = $_GET['hasta'] ?? date('Y-m-d');
 
-    // Recaudación por trabajador
     $stmt = $pdo->prepare("
         SELECT t.id, CONCAT(t.nombres, ' ', t.apellidos) as nombre, t.dni,
                COUNT(CASE WHEN p.estado = 'aprobado' THEN 1 END) as pagos_aprobados,
@@ -119,7 +78,6 @@ function handle_liquidacion() {
     $stmt->execute([$desde . ' 00:00:00', $hasta . ' 23:59:59']);
     $liquidacion = $stmt->fetchAll();
 
-    // Totales
     $total_recaudado = 0;
     $total_pendiente = 0;
     foreach ($liquidacion as &$l) {
@@ -129,7 +87,6 @@ function handle_liquidacion() {
         $total_pendiente += $l['total_pendiente'];
     }
 
-    // Recaudación por método de pago
     $stmt2 = $pdo->prepare("
         SELECT metodo_pago, COUNT(*) as cantidad, SUM(monto_pagado) as total
         FROM pagos
@@ -158,9 +115,8 @@ function handle_liquidacion_trabajador() {
 
     $pdo = db();
 
-    // Datos del trabajador
     $stmt = $pdo->prepare("
-        SELECT u.id, u.nombres, u.apellidos, u.dni, u.telefono,
+        SELECT u.id, u.nombres, u.apellidos, u.dni, u.telefono, u.placa, u.tipo_trabajador,
                tc.fecha_inicio_cobro
         FROM usuarios u
         LEFT JOIN trabajador_config tc ON u.id = tc.usuario_id
@@ -170,17 +126,17 @@ function handle_liquidacion_trabajador() {
     $trabajador = $stmt->fetch();
     if (!$trabajador) error_response('Trabajador no encontrado', 404);
 
-    // Historial completo de pagos
     $stmt2 = $pdo->prepare("
         SELECT p.id, p.monto_pagado, p.metodo_pago, p.estado, p.fecha_pago,
                p.fecha_validacion, p.observaciones, p.observacion_rechazo,
-               pp.anio, pp.mes, pp.quincena, pp.tipo_tarifa,
+               pp.anio, pp.mes, pp.quincena as semana, pp.frecuencia, pp.tipo_tarifa,
+               pp.fecha_inicio as periodo_inicio, pp.fecha_fin as periodo_fin,
                CONCAT(v.nombres, ' ', v.apellidos) as validado_por
         FROM pagos p
         JOIN periodos_pago pp ON p.periodo_id = pp.id
         LEFT JOIN usuarios v ON p.validado_por = v.id
         WHERE p.trabajador_id = ?
-        ORDER BY pp.anio ASC, pp.mes ASC, pp.quincena ASC
+        ORDER BY pp.fecha_inicio ASC
     ");
     $stmt2->execute([$trabajador_id]);
     $pagos = $stmt2->fetchAll();
