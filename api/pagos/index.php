@@ -1,7 +1,7 @@
 <?php
 /**
- * ETTUR - API de Pagos v2.0
- * Periodos semanales y mensuales según tipo de trabajador
+ * ETTUR - API de Pagos v2.2
+ * Semana actual visible + pago adelantado
  */
 
 require_once __DIR__ . '/../../config/database.php';
@@ -35,6 +35,7 @@ function generar_periodos_semanales($fecha_inicio, $fecha_fin, $tipo_trabajador,
     $periodos = [];
     $start = new DateTime($fecha_inicio);
     $end = new DateTime($fecha_fin);
+    $hoy = new DateTime(date('Y-m-d'));
     $dow = (int)$start->format('N');
     if ($dow !== 1) { $start->modify('next monday'); }
     $semana = 0;
@@ -42,10 +43,18 @@ function generar_periodos_semanales($fecha_inicio, $fecha_fin, $tipo_trabajador,
         $semana++;
         $fin_semana = clone $start;
         $fin_semana->modify('+6 days');
-        if ($fin_semana > $end) break;
+
+        // Incluir semana actual aunque no haya terminado
+        $es_semana_actual = ($hoy >= $start && $hoy <= $fin_semana);
+        $es_futura = ($start > $hoy);
+
+        // Solo omitir semanas futuras (después de la actual)
+        if ($es_futura && !$es_semana_actual) break;
+
         $fecha_str = $start->format('Y-m-d');
         $monto = get_monto_trabajador($tipo_trabajador, $fecha_str, $monto_personalizado);
         $temporada = get_temporada($fecha_str);
+
         $periodos[] = [
             'anio' => (int)$start->format('Y'),
             'mes' => (int)$start->format('n'),
@@ -54,8 +63,10 @@ function generar_periodos_semanales($fecha_inicio, $fecha_fin, $tipo_trabajador,
             'fecha_inicio' => $start->format('Y-m-d'),
             'fecha_fin' => $fin_semana->format('Y-m-d'),
             'tipo_tarifa' => $temporada,
-            'monto' => $monto
+            'monto' => $monto,
+            'es_semana_actual' => $es_semana_actual
         ];
+
         $start->modify('+7 days');
     }
     return $periodos;
@@ -65,15 +76,19 @@ function generar_periodos_mensuales($fecha_inicio, $fecha_fin, $tipo_trabajador,
     $periodos = [];
     $start = new DateTime($fecha_inicio);
     $end = new DateTime($fecha_fin);
+    $hoy = new DateTime(date('Y-m-d'));
     $start->setDate((int)$start->format('Y'), (int)$start->format('n'), 1);
     while ($start <= $end) {
         $year = (int)$start->format('Y');
         $month = (int)$start->format('n');
         $last_day = (int)$start->format('t');
         $fin_mes = new DateTime(sprintf('%04d-%02d-%02d', $year, $month, $last_day));
-        if ($fin_mes > $end && $start->format('Y-m') === $end->format('Y-m')) {
-            if ($end->format('j') < $last_day) break;
-        }
+
+        $es_mes_actual = ($hoy->format('Y-m') === $start->format('Y-m'));
+        $es_futuro = ($start > $hoy && !$es_mes_actual);
+
+        if ($es_futuro) break;
+
         $fecha_str = $start->format('Y-m-d');
         $monto = get_monto_trabajador($tipo_trabajador, $fecha_str, $monto_personalizado);
         $temporada = get_temporada($fecha_str);
@@ -82,7 +97,8 @@ function generar_periodos_mensuales($fecha_inicio, $fecha_fin, $tipo_trabajador,
             'frecuencia' => 'mensual',
             'fecha_inicio' => $start->format('Y-m-d'),
             'fecha_fin' => $fin_mes->format('Y-m-d'),
-            'tipo_tarifa' => $temporada, 'monto' => $monto
+            'tipo_tarifa' => $temporada, 'monto' => $monto,
+            'es_semana_actual' => $es_mes_actual
         ];
         $start->modify('first day of next month');
     }
@@ -216,8 +232,6 @@ function handle_registrar_pago() {
     }
     if (!$target_periodo) { error_response('El periodo especificado no es válido'); }
     $periodo_id = ensure_periodo($target_periodo);
-
-    // Verificar duplicado - solo bloquear si hay pendiente o aprobado
     $stmt_dup = $pdo->prepare("SELECT id, estado FROM pagos WHERE trabajador_id = ? AND periodo_id = ?");
     $stmt_dup->execute([$trabajador_id, $periodo_id]);
     $dup = $stmt_dup->fetch();
@@ -225,14 +239,11 @@ function handle_registrar_pago() {
         if ($dup['estado'] === 'pendiente' || $dup['estado'] === 'aprobado') {
             error_response('Ya existe un pago ' . $dup['estado'] . ' para este periodo');
         }
-        // Si fue rechazado, eliminar el registro anterior para permitir reenvío
         if ($dup['estado'] === 'rechazado') {
             $stmt_del = $pdo->prepare("DELETE FROM pagos WHERE id = ?");
             $stmt_del->execute([$dup['id']]);
         }
     }
-
-    // Procesar comprobante
     $comprobante_url = null;
     $comprobante_nombre = null;
     if (isset($_FILES['comprobante']) && $_FILES['comprobante']['error'] === UPLOAD_ERR_OK) {
@@ -248,7 +259,6 @@ function handle_registrar_pago() {
         $comprobante_url = 'uploads/' . date('Y/m/') . $filename;
         $comprobante_nombre = $file['name'];
     }
-
     $stmt_insert = $pdo->prepare("
         INSERT INTO pagos (trabajador_id, periodo_id, monto_pagado, metodo_pago, comprobante_url, comprobante_nombre, observaciones)
         VALUES (?, ?, ?, ?, ?, ?, ?)
