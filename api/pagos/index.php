@@ -151,10 +151,7 @@ function filtrar_pendientes($periodos, $pagados) {
     $pendientes = [];
     foreach ($periodos as $p) {
         $key = $p['fecha_inicio'] . '_' . $p['fecha_fin'];
-        // Solo excluir de la deuda si está APROBADO
-        // Pendiente y rechazado siguen contando como deuda
-        if (!isset($pagados[$key]) || $pagados[$key]['estado'] === 'rechazado' || $pagados[$key]['estado'] === 'pendiente') {
-            $p['pago_pendiente_validacion'] = isset($pagados[$key]) && $pagados[$key]['estado'] === 'pendiente';
+        if (!isset($pagados[$key]) || $pagados[$key]['estado'] === 'rechazado') {
             $pendientes[] = $p;
         }
     }
