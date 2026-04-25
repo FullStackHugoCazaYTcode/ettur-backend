@@ -61,10 +61,12 @@ function handle_meta_mensual() {
     $user = Auth::requireRole(['admin', 'coadmin']);
     $pdo = db();
 
-    $anio = $_GET['anio'] ?? date('Y');
-    $mes = $_GET['mes'] ?? date('n');
+    $anio = (int)($_GET['anio'] ?? date('Y'));
+    $mes = (int)($_GET['mes'] ?? date('n'));
 
-    // Obtener todos los trabajadores activos con config
+    $primer_dia = sprintf('%04d-%02d-01', $anio, $mes);
+    $ultimo_dia = date('Y-m-t', strtotime($primer_dia));
+
     $stmt = $pdo->prepare("
         SELECT u.id, CONCAT(u.nombres, ' ', u.apellidos) as nombre, u.dni, u.placa,
                u.tipo_trabajador, u.monto_personalizado, u.frecuencia_personalizado,
@@ -83,11 +85,6 @@ function handle_meta_mensual() {
     foreach ($trabajadores as $t) {
         $tipo = $t['tipo_trabajador'] ?? 'normal';
         $frecuencia = get_frecuencia($tipo, $t['frecuencia_personalizado']);
-
-        // Calcular cuánto debería pagar este mes
-        $primer_dia = sprintf('%04d-%02d-01', $anio, $mes);
-        $ultimo_dia = date('Y-m-t', strtotime($primer_dia));
-
         $fecha_lanzamiento = $t['fecha_lanzamiento'] ?? $t['fecha_inicio_cobro'];
 
         // Solo contar si el trabajador ya está activo en este mes
@@ -95,66 +92,74 @@ function handle_meta_mensual() {
 
         $inicio_calculo = max($fecha_lanzamiento, $primer_dia);
 
+        // Generar los periodos exactos de este mes
+        $periodos_mes = [];
         if ($frecuencia === 'mensual') {
             $monto_mes = get_monto_trabajador($tipo, $primer_dia, $t['monto_personalizado']);
-            $meta_trabajador = $monto_mes;
+            $periodos_mes[] = ['fecha_inicio' => $primer_dia, 'fecha_fin' => $ultimo_dia, 'monto' => $monto_mes];
         } else {
-            // Contar semanas completas del mes
             $start = new DateTime($inicio_calculo);
             $end = new DateTime($ultimo_dia);
             $dow = (int)$start->format('N');
             if ($dow !== 1) $start->modify('next monday');
-            $semanas = 0;
-            $monto_sem_total = 0;
             while ($start <= $end) {
                 $fin_sem = clone $start;
                 $fin_sem->modify('+6 days');
-                if ($fin_sem > $end) break;
+                // Solo contar semanas que EMPIEZAN en este mes
+                if ((int)$start->format('n') !== $mes) { $start->modify('+7 days'); continue; }
+                if ($fin_sem > $end && (int)$start->format('n') === $mes) {
+                    // Semana incompleta al final del mes, igual contar si empezó en el mes
+                }
                 $monto_sem = get_monto_trabajador($tipo, $start->format('Y-m-d'), $t['monto_personalizado']);
-                $monto_sem_total += $monto_sem;
-                $semanas++;
+                $periodos_mes[] = ['fecha_inicio' => $start->format('Y-m-d'), 'fecha_fin' => $fin_sem->format('Y-m-d'), 'monto' => $monto_sem];
                 $start->modify('+7 days');
             }
-            $meta_trabajador = $monto_sem_total;
         }
 
-        // Cuánto ha pagado (aprobado) este mes - buscar por semanas que caen en el mes
-        $stmt2 = $pdo->prepare("
-            SELECT COALESCE(SUM(p.monto_pagado), 0) as pagado
-            FROM pagos p
-            JOIN periodos_pago pp ON p.periodo_id = pp.id
-            WHERE p.trabajador_id = ? AND p.estado = 'aprobado' AND p.tipo_periodo = 'corriente'
-            AND pp.fecha_inicio <= ? AND pp.fecha_fin >= ?
-        ");
-        $stmt2->execute([$t['id'], $ultimo_dia, $primer_dia]);
-        $pagado = (float)$stmt2->fetch()['pagado'];
+        $meta_trabajador = 0;
+        foreach ($periodos_mes as $pm) { $meta_trabajador += $pm['monto']; }
+
+        // Buscar pagos aprobados para estos periodos exactos
+        $pagado = 0;
+        foreach ($periodos_mes as $pm) {
+            $stmt2 = $pdo->prepare("
+                SELECT COALESCE(SUM(p.monto_pagado), 0) as pagado
+                FROM pagos p
+                JOIN periodos_pago pp ON p.periodo_id = pp.id
+                WHERE p.trabajador_id = ? AND p.estado = 'aprobado'
+                AND pp.fecha_inicio = ? AND pp.fecha_fin = ?
+            ");
+            $stmt2->execute([$t['id'], $pm['fecha_inicio'], $pm['fecha_fin']]);
+            $pagado += (float)$stmt2->fetch()['pagado'];
+        }
 
         $meta_total += $meta_trabajador;
         $recaudado_total += $pagado;
 
-        $detalles[] = [
-            'id' => (int)$t['id'],
-            'nombre' => $t['nombre'],
-            'dni' => $t['dni'],
-            'placa' => $t['placa'],
-            'tipo_trabajador' => $tipo,
-            'meta' => round($meta_trabajador, 2),
-            'pagado' => round($pagado, 2),
-            'pendiente' => round(max(0, $meta_trabajador - $pagado), 2),
-            'porcentaje' => $meta_trabajador > 0 ? round(($pagado / $meta_trabajador) * 100, 1) : 0
-        ];
+        if ($meta_trabajador > 0 || $pagado > 0) {
+            $detalles[] = [
+                'id' => (int)$t['id'],
+                'nombre' => $t['nombre'],
+                'dni' => $t['dni'],
+                'placa' => $t['placa'],
+                'tipo_trabajador' => $tipo,
+                'meta' => round($meta_trabajador, 2),
+                'pagado' => round($pagado, 2),
+                'pendiente' => round(max(0, $meta_trabajador - $pagado), 2),
+                'porcentaje' => $meta_trabajador > 0 ? round(($pagado / $meta_trabajador) * 100, 1) : 0
+            ];
+        }
     }
 
-    // Ordenar por porcentaje (menor primero = más deuda)
     usort($detalles, function($a, $b) { return $a['porcentaje'] - $b['porcentaje']; });
 
     $meses_nombres = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                       'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
     success_response([
-        'anio' => (int)$anio,
-        'mes' => (int)$mes,
-        'mes_nombre' => $meses_nombres[(int)$mes] ?? '',
+        'anio' => $anio,
+        'mes' => $mes,
+        'mes_nombre' => $meses_nombres[$mes] ?? '',
         'meta_total' => round($meta_total, 2),
         'recaudado_total' => round($recaudado_total, 2),
         'pendiente_total' => round(max(0, $meta_total - $recaudado_total), 2),
