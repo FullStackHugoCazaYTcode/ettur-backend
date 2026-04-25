@@ -118,15 +118,15 @@ function handle_meta_mensual() {
             $meta_trabajador = $monto_sem_total;
         }
 
-        // Cuánto ha pagado (aprobado) este mes
+        // Cuánto ha pagado (aprobado) este mes - buscar por semanas que caen en el mes
         $stmt2 = $pdo->prepare("
             SELECT COALESCE(SUM(p.monto_pagado), 0) as pagado
             FROM pagos p
             JOIN periodos_pago pp ON p.periodo_id = pp.id
             WHERE p.trabajador_id = ? AND p.estado = 'aprobado' AND p.tipo_periodo = 'corriente'
-            AND pp.fecha_inicio >= ? AND pp.fecha_fin <= ?
+            AND pp.fecha_inicio <= ? AND pp.fecha_fin >= ?
         ");
-        $stmt2->execute([$t['id'], $primer_dia, $ultimo_dia]);
+        $stmt2->execute([$t['id'], $ultimo_dia, $primer_dia]);
         $pagado = (float)$stmt2->fetch()['pagado'];
 
         $meta_total += $meta_trabajador;
