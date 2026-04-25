@@ -1,7 +1,7 @@
 <?php
 /**
- * ETTUR - API de Reportes v3.0
- * Con metas, deudas por trabajador y desglose histórico
+ * ETTUR - API de Reportes v3.2
+ * Meta precisa usando mismos periodos que el sistema de pagos
  */
 
 require_once __DIR__ . '/../../config/database.php';
@@ -10,7 +10,6 @@ require_once __DIR__ . '/../../middleware/Auth.php';
 
 cors_headers();
 
-$method = $_SERVER['REQUEST_METHOD'];
 $action = $_GET['action'] ?? '';
 
 switch ($action) {
@@ -21,6 +20,70 @@ switch ($action) {
     case 'deudas':                 handle_deudas(); break;
     case 'auditoria':              handle_auditoria(); break;
     default: error_response('Acción no válida', 404);
+}
+
+/**
+ * Genera periodos semanales SIN corte de semana actual (para reportes)
+ */
+function periodos_reporte_semanal($fecha_inicio, $fecha_fin, $tipo, $monto_pers) {
+    $periodos = [];
+    $start = new DateTime($fecha_inicio);
+    $end = new DateTime($fecha_fin);
+    $dow = (int)$start->format('N');
+    if ($dow !== 1) $start->modify('next monday');
+    while ($start <= $end) {
+        $fin_sem = clone $start;
+        $fin_sem->modify('+6 days');
+        if ($fin_sem > $end) break;
+        $fs = $start->format('Y-m-d');
+        $periodos[] = [
+            'fecha_inicio' => $fs,
+            'fecha_fin' => $fin_sem->format('Y-m-d'),
+            'monto' => get_monto_trabajador($tipo, $fs, $monto_pers)
+        ];
+        $start->modify('+7 days');
+    }
+    return $periodos;
+}
+
+function periodos_reporte_mensual($fecha_inicio, $fecha_fin, $tipo, $monto_pers) {
+    $periodos = [];
+    $start = new DateTime($fecha_inicio);
+    $end = new DateTime($fecha_fin);
+    $start->setDate((int)$start->format('Y'), (int)$start->format('n'), 1);
+    while ($start <= $end) {
+        $y = (int)$start->format('Y');
+        $m = (int)$start->format('n');
+        $ld = (int)$start->format('t');
+        $fm = new DateTime(sprintf('%04d-%02d-%02d', $y, $m, $ld));
+        if ($fm > $end) $fm = clone $end;
+        $fs = $start->format('Y-m-d');
+        $periodos[] = [
+            'fecha_inicio' => $fs,
+            'fecha_fin' => $fm->format('Y-m-d'),
+            'monto' => get_monto_trabajador($tipo, $fs, $monto_pers)
+        ];
+        $start->modify('first day of next month');
+    }
+    return $periodos;
+}
+
+/**
+ * Obtener pagos aprobados de un trabajador indexados por periodo
+ */
+function get_aprobados_map($trabajador_id) {
+    $pdo = db();
+    $stmt = $pdo->prepare("
+        SELECT pp.fecha_inicio, pp.fecha_fin, p.monto_pagado
+        FROM pagos p JOIN periodos_pago pp ON p.periodo_id = pp.id
+        WHERE p.trabajador_id = ? AND p.estado = 'aprobado'
+    ");
+    $stmt->execute([$trabajador_id]);
+    $map = [];
+    foreach ($stmt->fetchAll() as $r) {
+        $map[$r['fecha_inicio'] . '_' . $r['fecha_fin']] = (float)$r['monto_pagado'];
+    }
+    return $map;
 }
 
 function handle_dashboard() {
@@ -45,10 +108,8 @@ function handle_dashboard() {
     $stmt = $pdo->query("
         SELECT p.id, p.monto_pagado, p.metodo_pago, p.estado, p.fecha_pago, p.tipo_periodo,
                CONCAT(t.nombres, ' ', t.apellidos) as trabajador,
-               pp.fecha_inicio as periodo_inicio, pp.fecha_fin as periodo_fin,
-               pp.frecuencia
-        FROM pagos p
-        JOIN usuarios t ON p.trabajador_id = t.id
+               pp.fecha_inicio as periodo_inicio, pp.fecha_fin as periodo_fin, pp.frecuencia
+        FROM pagos p JOIN usuarios t ON p.trabajador_id = t.id
         JOIN periodos_pago pp ON p.periodo_id = pp.id
         ORDER BY p.fecha_pago DESC LIMIT 5
     ");
@@ -67,6 +128,7 @@ function handle_meta_mensual() {
     $primer_dia = sprintf('%04d-%02d-01', $anio, $mes);
     $ultimo_dia = date('Y-m-t', strtotime($primer_dia));
 
+    // Obtener trabajadores activos
     $stmt = $pdo->prepare("
         SELECT u.id, CONCAT(u.nombres, ' ', u.apellidos) as nombre, u.dni, u.placa,
                u.tipo_trabajador, u.monto_personalizado, u.frecuencia_personalizado,
@@ -87,50 +149,46 @@ function handle_meta_mensual() {
         $frecuencia = get_frecuencia($tipo, $t['frecuencia_personalizado']);
         $fecha_lanzamiento = $t['fecha_lanzamiento'] ?? $t['fecha_inicio_cobro'];
 
-        // Solo contar si el trabajador ya está activo en este mes
+        // Si el trabajador aún no estaba activo en este mes, saltar
         if ($fecha_lanzamiento > $ultimo_dia) continue;
 
-        $inicio_calculo = max($fecha_lanzamiento, $primer_dia);
+        // Generar TODOS los periodos corrientes desde lanzamiento hasta fin del mes
+        $inicio = $fecha_lanzamiento;
+        $fin = $ultimo_dia;
 
-        // Generar los periodos exactos de este mes
-        $periodos_mes = [];
         if ($frecuencia === 'mensual') {
-            $monto_mes = get_monto_trabajador($tipo, $primer_dia, $t['monto_personalizado']);
-            $periodos_mes[] = ['fecha_inicio' => $primer_dia, 'fecha_fin' => $ultimo_dia, 'monto' => $monto_mes];
+            $todos = periodos_reporte_mensual($inicio, $fin, $tipo, $t['monto_personalizado']);
         } else {
-            $start = new DateTime($inicio_calculo);
-            $end = new DateTime($ultimo_dia);
-            $dow = (int)$start->format('N');
-            if ($dow !== 1) $start->modify('next monday');
-            while ($start <= $end) {
-                $fin_sem = clone $start;
-                $fin_sem->modify('+6 days');
-                // Solo contar semanas que EMPIEZAN en este mes
-                if ((int)$start->format('n') !== $mes) { $start->modify('+7 days'); continue; }
-                if ($fin_sem > $end && (int)$start->format('n') === $mes) {
-                    // Semana incompleta al final del mes, igual contar si empezó en el mes
-                }
-                $monto_sem = get_monto_trabajador($tipo, $start->format('Y-m-d'), $t['monto_personalizado']);
-                $periodos_mes[] = ['fecha_inicio' => $start->format('Y-m-d'), 'fecha_fin' => $fin_sem->format('Y-m-d'), 'monto' => $monto_sem];
-                $start->modify('+7 days');
+            $todos = periodos_reporte_semanal($inicio, $fin, $tipo, $t['monto_personalizado']);
+        }
+
+        // Filtrar solo periodos que caen en el mes seleccionado
+        // Un periodo "cae en el mes" si su fecha_inicio está en el mes
+        $periodos_mes = [];
+        foreach ($todos as $p) {
+            $p_mes = (int)date('n', strtotime($p['fecha_inicio']));
+            $p_anio = (int)date('Y', strtotime($p['fecha_inicio']));
+            if ($p_mes === $mes && $p_anio === $anio) {
+                $periodos_mes[] = $p;
             }
         }
 
+        // Calcular meta del mes
         $meta_trabajador = 0;
-        foreach ($periodos_mes as $pm) { $meta_trabajador += $pm['monto']; }
+        foreach ($periodos_mes as $pm) {
+            $meta_trabajador += $pm['monto'];
+        }
 
-        // Buscar pagos aprobados para estos periodos exactos
+        // Obtener pagos aprobados
+        $aprobados = get_aprobados_map($t['id']);
+
+        // Contar cuánto pagó de los periodos de este mes
         $pagado = 0;
         foreach ($periodos_mes as $pm) {
-            $stmt2 = $pdo->prepare("
-                SELECT COALESCE(SUM(p.monto_pagado), 0) as pagado
-                FROM pagos p
-                JOIN periodos_pago pp ON p.periodo_id = pp.id
-                WHERE p.trabajador_id = ? AND p.estado = 'aprobado'
-                AND pp.fecha_inicio = ? AND pp.fecha_fin = ?
-            ");
-            $stmt2->execute([$t['id'], $pm['fecha_inicio'], $pm['fecha_fin']]);
-            $pagado += (float)$stmt2->fetch()['pagado'];
+            $key = $pm['fecha_inicio'] . '_' . $pm['fecha_fin'];
+            if (isset($aprobados[$key])) {
+                $pagado += $aprobados[$key];
+            }
         }
 
         $meta_total += $meta_trabajador;
@@ -143,6 +201,7 @@ function handle_meta_mensual() {
                 'dni' => $t['dni'],
                 'placa' => $t['placa'],
                 'tipo_trabajador' => $tipo,
+                'semanas' => count($periodos_mes),
                 'meta' => round($meta_trabajador, 2),
                 'pagado' => round($pagado, 2),
                 'pendiente' => round(max(0, $meta_trabajador - $pagado), 2),
@@ -195,42 +254,39 @@ function handle_deudas() {
         $fecha_lanzamiento = $t['fecha_lanzamiento'] ?? $fecha_deuda;
         $fecha_hoy = date('Y-m-d');
 
-        // Obtener pagos aprobados
-        $stmt2 = $pdo->prepare("
-            SELECT pp.fecha_inicio, pp.fecha_fin, p.estado
-            FROM pagos p JOIN periodos_pago pp ON p.periodo_id = pp.id
-            WHERE p.trabajador_id = ? AND p.estado = 'aprobado'
-        ");
-        $stmt2->execute([$t['id']]);
-        $pagos = $stmt2->fetchAll();
-        $aprobados = [];
-        foreach ($pagos as $pg) { $aprobados[$pg['fecha_inicio'] . '_' . $pg['fecha_fin']] = true; }
+        $aprobados = get_aprobados_map($t['id']);
 
         // Pagos pendientes de validación
-        $stmt3 = $pdo->prepare("
-            SELECT COUNT(*) as total FROM pagos WHERE trabajador_id = ? AND estado = 'pendiente'
-        ");
+        $stmt3 = $pdo->prepare("SELECT COUNT(*) as total FROM pagos WHERE trabajador_id = ? AND estado = 'pendiente'");
         $stmt3->execute([$t['id']]);
         $pendientes_validacion = (int)$stmt3->fetch()['total'];
 
-        // Calcular deuda corriente
+        // Deuda corriente
         $deuda_corr = 0;
         $periodos_corr = 0;
         if ($fecha_lanzamiento <= $fecha_hoy) {
-            $pcs = generar_periodos_corrientes($fecha_lanzamiento, $fecha_hoy, $tipo, $t['monto_personalizado'], $frecuencia);
+            if ($frecuencia === 'mensual') {
+                $pcs = periodos_reporte_mensual($fecha_lanzamiento, $fecha_hoy, $tipo, $t['monto_personalizado']);
+            } else {
+                $pcs = periodos_reporte_semanal($fecha_lanzamiento, $fecha_hoy, $tipo, $t['monto_personalizado']);
+            }
             foreach ($pcs as $pc) {
                 $key = $pc['fecha_inicio'] . '_' . $pc['fecha_fin'];
                 if (!isset($aprobados[$key])) { $deuda_corr += $pc['monto']; $periodos_corr++; }
             }
         }
 
-        // Calcular deuda histórica
+        // Deuda histórica
         $deuda_hist = 0;
         $periodos_hist = 0;
         if ($fecha_deuda < $fecha_lanzamiento) {
             $dia_antes = new DateTime($fecha_lanzamiento);
             $dia_antes->modify('-1 day');
-            $phs = generar_periodos_historicos($fecha_deuda, $dia_antes->format('Y-m-d'), $tipo, $t['monto_personalizado'], $frecuencia);
+            if ($frecuencia === 'mensual') {
+                $phs = periodos_reporte_mensual($fecha_deuda, $dia_antes->format('Y-m-d'), $tipo, $t['monto_personalizado']);
+            } else {
+                $phs = periodos_reporte_semanal($fecha_deuda, $dia_antes->format('Y-m-d'), $tipo, $t['monto_personalizado']);
+            }
             foreach ($phs as $ph) {
                 $key = $ph['fecha_inicio'] . '_' . $ph['fecha_fin'];
                 if (!isset($aprobados[$key])) { $deuda_hist += $ph['monto']; $periodos_hist++; }
@@ -256,7 +312,6 @@ function handle_deudas() {
         ];
     }
 
-    // Ordenar por deuda total (mayor primero)
     usort($resultado, function($a, $b) { return $b['deuda_total'] - $a['deuda_total']; });
 
     success_response([
@@ -270,44 +325,12 @@ function handle_deudas() {
     ]);
 }
 
-// Helpers para generar periodos sin depender de semana actual
-function generar_periodos_corrientes($fecha_inicio, $fecha_fin, $tipo, $monto_pers, $frecuencia) {
-    $periodos = [];
-    $start = new DateTime($fecha_inicio);
-    $end = new DateTime($fecha_fin);
-    if ($frecuencia === 'mensual') {
-        $start->setDate((int)$start->format('Y'), (int)$start->format('n'), 1);
-        while ($start <= $end) {
-            $y = (int)$start->format('Y'); $m = (int)$start->format('n');
-            $fm = new DateTime(sprintf('%04d-%02d-%02d', $y, $m, (int)$start->format('t')));
-            $fs = $start->format('Y-m-d');
-            $periodos[] = ['fecha_inicio' => $fs, 'fecha_fin' => $fm->format('Y-m-d'),
-                           'monto' => get_monto_trabajador($tipo, $fs, $monto_pers)];
-            $start->modify('first day of next month');
-        }
-    } else {
-        $dow = (int)$start->format('N'); if ($dow !== 1) $start->modify('next monday');
-        while ($start <= $end) {
-            $fs_end = clone $start; $fs_end->modify('+6 days');
-            if ($fs_end > $end) break;
-            $fs = $start->format('Y-m-d');
-            $periodos[] = ['fecha_inicio' => $fs, 'fecha_fin' => $fs_end->format('Y-m-d'),
-                           'monto' => get_monto_trabajador($tipo, $fs, $monto_pers)];
-            $start->modify('+7 days');
-        }
-    }
-    return $periodos;
-}
-
-function generar_periodos_historicos($fecha_inicio, $fecha_fin, $tipo, $monto_pers, $frecuencia) {
-    return generar_periodos_corrientes($fecha_inicio, $fecha_fin, $tipo, $monto_pers, $frecuencia);
-}
-
 function handle_liquidacion() {
     $user = Auth::requireRole(['admin', 'coadmin']);
     $pdo = db();
     $desde = $_GET['desde'] ?? date('Y-01-01');
     $hasta = $_GET['hasta'] ?? date('Y-m-d');
+
     $stmt = $pdo->prepare("
         SELECT t.id, CONCAT(t.nombres, ' ', t.apellidos) as nombre, t.dni,
                COUNT(CASE WHEN p.estado = 'aprobado' THEN 1 END) as pagos_aprobados,
@@ -317,23 +340,27 @@ function handle_liquidacion() {
         FROM usuarios t
         LEFT JOIN pagos p ON t.id = p.trabajador_id AND p.fecha_pago BETWEEN ? AND ?
         WHERE t.rol_id = 3 AND t.activo = 1
-        GROUP BY t.id ORDER BY t.apellidos, t.nombres
+        GROUP BY t.id ORDER BY t.apellidos
     ");
     $stmt->execute([$desde . ' 00:00:00', $hasta . ' 23:59:59']);
     $liquidacion = $stmt->fetchAll();
-    $total_recaudado = 0; $total_pendiente = 0;
+
+    $total_recaudado = 0;
+    $total_pendiente = 0;
     foreach ($liquidacion as &$l) {
         $l['total_aprobado'] = (float)$l['total_aprobado'];
         $l['total_pendiente'] = (float)$l['total_pendiente'];
         $total_recaudado += $l['total_aprobado'];
         $total_pendiente += $l['total_pendiente'];
     }
+
     $stmt2 = $pdo->prepare("
         SELECT metodo_pago, COUNT(*) as cantidad, SUM(monto_pagado) as total
         FROM pagos WHERE estado = 'aprobado' AND fecha_pago BETWEEN ? AND ?
         GROUP BY metodo_pago
     ");
     $stmt2->execute([$desde . ' 00:00:00', $hasta . ' 23:59:59']);
+
     success_response([
         'periodo' => ['desde' => $desde, 'hasta' => $hasta],
         'trabajadores' => $liquidacion,
@@ -351,6 +378,7 @@ function handle_liquidacion_trabajador() {
     $trabajador_id = $_GET['trabajador_id'] ?? 0;
     if (!$trabajador_id) error_response('ID requerido');
     $pdo = db();
+
     $stmt = $pdo->prepare("
         SELECT u.id, u.nombres, u.apellidos, u.dni, u.telefono, u.placa, u.tipo_trabajador,
                tc.fecha_inicio_cobro, tc.fecha_lanzamiento
@@ -359,6 +387,7 @@ function handle_liquidacion_trabajador() {
     $stmt->execute([$trabajador_id]);
     $trabajador = $stmt->fetch();
     if (!$trabajador) error_response('No encontrado', 404);
+
     $stmt2 = $pdo->prepare("
         SELECT p.id, p.monto_pagado, p.metodo_pago, p.estado, p.fecha_pago, p.tipo_periodo,
                pp.frecuencia, pp.tipo_tarifa,
@@ -370,8 +399,10 @@ function handle_liquidacion_trabajador() {
     ");
     $stmt2->execute([$trabajador_id]);
     $pagos = $stmt2->fetchAll();
+
     $total_pagado = 0;
     foreach ($pagos as $p) { if ($p['estado'] === 'aprobado') $total_pagado += $p['monto_pagado']; }
+
     success_response([
         'trabajador' => $trabajador,
         'pagos' => $pagos,
