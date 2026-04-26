@@ -249,7 +249,7 @@ function handle_periodos_pendientes() {
                 $sem++;
                 $fin_sem = clone $hist_start;
                 $fin_sem->modify('+6 days');
-                if ($fin_sem > $hist_end) break;
+                if ($hist_start > $hist_end) break;
                 $fecha_str = $hist_start->format('Y-m-d');
                 $monto = get_monto_trabajador($tipo, $fecha_str, $trab['monto_personalizado']);
                 $periodos_historicos[] = [
@@ -372,7 +372,7 @@ function handle_registrar_pago() {
             $s = 0;
             while ($hs <= $he) {
                 $s++; $fss = clone $hs; $fss->modify('+6 days');
-                if ($fss > $he) break;
+                if ($hs > $he) break;
                 $fs = $hs->format('Y-m-d');
                 $todos_periodos[] = ['anio'=>(int)$hs->format('Y'),'mes'=>(int)$hs->format('n'),'semana'=>$s,
                     'frecuencia'=>'semanal','fecha_inicio'=>$fs,'fecha_fin'=>$fss->format('Y-m-d'),
