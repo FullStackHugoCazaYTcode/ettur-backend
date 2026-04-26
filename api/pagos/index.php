@@ -39,13 +39,26 @@ function generar_periodos_semanales($fecha_inicio, $fecha_fin, $tipo_trabajador,
     $dow = (int)$start->format('N');
     if ($dow !== 1) { $start->modify('next monday'); }
     $semana = 0;
+    
+    // Calcular lunes y domingo de la semana actual
+    $lunes_actual = clone $hoy;
+    $dow_hoy = (int)$hoy->format('N');
+    if ($dow_hoy !== 1) { $lunes_actual->modify('last monday'); }
+    $domingo_actual = clone $lunes_actual;
+    $domingo_actual->modify('+6 days');
+    
     while ($start <= $end) {
         $semana++;
         $fin_semana = clone $start;
         $fin_semana->modify('+6 days');
-        $es_semana_actual = ($hoy >= $start && $hoy <= $fin_semana);
-        $es_futura = ($start > $hoy && !$es_semana_actual);
+        
+        // Es semana actual si coincide con la semana de hoy
+        $es_semana_actual = ($start->format('Y-m-d') === $lunes_actual->format('Y-m-d'));
+        
+        // Permitir hasta la semana actual, no más allá
+        $es_futura = ($start > $domingo_actual);
         if ($es_futura) break;
+        
         $fecha_str = $start->format('Y-m-d');
         $monto = get_monto_trabajador($tipo_trabajador, $fecha_str, $monto_personalizado);
         $temporada = get_temporada($fecha_str);
@@ -112,12 +125,14 @@ function generar_periodos_trabajador_tipo($trabajador_id, $fecha_inicio, $fecha_
 
 function ensure_periodo($periodo_data) {
     $pdo = db();
-    $semana = $periodo_data['semana'] ?? null;
-    $frecuencia = $periodo_data['frecuencia'] ?? 'semanal';
+    // Buscar por fechas exactas
     $stmt = $pdo->prepare("SELECT id FROM periodos_pago WHERE fecha_inicio = ? AND fecha_fin = ?");
     $stmt->execute([$periodo_data['fecha_inicio'], $periodo_data['fecha_fin']]);
     $existing = $stmt->fetch();
     if ($existing) return (int)$existing['id'];
+    
+    $semana = $periodo_data['semana'] ?? null;
+    $frecuencia = $periodo_data['frecuencia'] ?? 'semanal';
     $stmt2 = $pdo->prepare("
         INSERT INTO periodos_pago (anio, mes, quincena, frecuencia, fecha_inicio, fecha_fin, tipo_tarifa, monto)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
