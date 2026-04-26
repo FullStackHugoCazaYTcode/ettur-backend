@@ -194,28 +194,33 @@ function handle_update() {
             $pdo->prepare("UPDATE usuarios SET " . implode(', ', $fields) . " WHERE id = ?")->execute($params);
         }
 
-        // Actualizar config de trabajador
         if (isset($data['fecha_inicio_cobro']) || isset($data['fecha_lanzamiento'])) {
-            $fecha_inicio = $data['fecha_inicio_cobro'] ?? null;
-            $fecha_lanzamiento = $data['fecha_lanzamiento'] ?? null;
+            $fecha_inicio = !empty($data['fecha_inicio_cobro']) ? $data['fecha_inicio_cobro'] : null;
+            $fecha_lanzamiento = !empty($data['fecha_lanzamiento']) ? $data['fecha_lanzamiento'] : null;
 
-            // Si no tiene config, la fecha_lanzamiento por defecto es igual a fecha_inicio
-            if ($fecha_inicio && !$fecha_lanzamiento) {
-                $fecha_lanzamiento = $fecha_inicio;
+            // Verificar si ya existe config
+            $stmtC = $pdo->prepare("SELECT id, fecha_inicio_cobro, fecha_lanzamiento FROM trabajador_config WHERE usuario_id = ?");
+            $stmtC->execute([$id]);
+            $existente = $stmtC->fetch();
+
+            if ($existente) {
+                // Actualizar solo los campos que se enviaron
+                $updates = [];
+                $uparams = [];
+                if ($fecha_inicio !== null) { $updates[] = "fecha_inicio_cobro = ?"; $uparams[] = $fecha_inicio; }
+                if ($fecha_lanzamiento !== null) { $updates[] = "fecha_lanzamiento = ?"; $uparams[] = $fecha_lanzamiento; }
+                $updates[] = "configurado_por = ?"; $uparams[] = $admin['id'];
+                $updates[] = "fecha_configuracion = NOW()";
+                $uparams[] = $id;
+                $pdo->prepare("UPDATE trabajador_config SET " . implode(', ', $updates) . " WHERE usuario_id = ?")->execute($uparams);
+            } else {
+                // Crear nuevo
+                if (!$fecha_lanzamiento && $fecha_inicio) $fecha_lanzamiento = $fecha_inicio;
+                $pdo->prepare("
+                    INSERT INTO trabajador_config (usuario_id, fecha_inicio_cobro, fecha_lanzamiento, notas, configurado_por)
+                    VALUES (?, ?, ?, ?, ?)
+                ")->execute([$id, $fecha_inicio, $fecha_lanzamiento, sanitize_string($data['notas_config'] ?? ''), $admin['id']]);
             }
-
-            $stmt2 = $pdo->prepare("
-                INSERT INTO trabajador_config (usuario_id, fecha_inicio_cobro, fecha_lanzamiento, notas, configurado_por)
-                VALUES (?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                fecha_inicio_cobro = COALESCE(VALUES(fecha_inicio_cobro), fecha_inicio_cobro),
-                fecha_lanzamiento = COALESCE(VALUES(fecha_lanzamiento), fecha_lanzamiento),
-                notas = VALUES(notas), configurado_por = VALUES(configurado_por), fecha_configuracion = NOW()
-            ");
-            $stmt2->execute([
-                $id, $fecha_inicio, $fecha_lanzamiento,
-                sanitize_string($data['notas_config'] ?? ''), $admin['id']
-            ]);
         }
 
         $pdo->commit();
