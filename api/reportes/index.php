@@ -34,7 +34,7 @@ function periodos_reporte_semanal($fecha_inicio, $fecha_fin, $tipo, $monto_pers)
     while ($start <= $end) {
         $fin_sem = clone $start;
         $fin_sem->modify('+6 days');
-        if ($fin_sem > $end) break;
+        // Generar la semana aunque termine en el siguiente mes
         $fs = $start->format('Y-m-d');
         $periodos[] = [
             'fecha_inicio' => $fs,
