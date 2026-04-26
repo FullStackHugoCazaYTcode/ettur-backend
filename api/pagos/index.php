@@ -40,24 +40,27 @@ function generar_periodos_semanales($fecha_inicio, $fecha_fin, $tipo_trabajador,
     if ($dow !== 1) { $start->modify('next monday'); }
     $semana = 0;
     
-    // Calcular lunes y domingo de la semana actual
+    // Calcular lunes de la semana actual
     $lunes_actual = clone $hoy;
     $dow_hoy = (int)$hoy->format('N');
     if ($dow_hoy !== 1) { $lunes_actual->modify('last monday'); }
-    $domingo_actual = clone $lunes_actual;
-    $domingo_actual->modify('+6 days');
     
-    while ($start <= $end) {
+    while (true) {
         $semana++;
         $fin_semana = clone $start;
         $fin_semana->modify('+6 days');
         
-        // Es semana actual si coincide con la semana de hoy
-        $es_semana_actual = ($start->format('Y-m-d') === $lunes_actual->format('Y-m-d'));
+        // La semana pertenece al mes donde EMPIEZA
+        // Solo parar si el LUNES de la semana es posterior al lunes de la semana actual
+        if ($start > $lunes_actual) break;
         
-        // Permitir hasta la semana actual, no más allá
-        $es_futura = ($start > $domingo_actual);
-        if ($es_futura) break;
+        // También parar si el inicio de la semana es anterior a la fecha de inicio
+        if ($start < new DateTime($fecha_inicio) && $semana === 1) {
+            $start->modify('+7 days');
+            continue;
+        }
+        
+        $es_semana_actual = ($start->format('Y-m-d') === $lunes_actual->format('Y-m-d'));
         
         $fecha_str = $start->format('Y-m-d');
         $monto = get_monto_trabajador($tipo_trabajador, $fecha_str, $monto_personalizado);
