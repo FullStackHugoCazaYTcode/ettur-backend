@@ -52,19 +52,18 @@ function periodos_reporte_mensual($fecha_inicio, $fecha_fin, $tipo, $monto_pers)
     $end = new DateTime($fecha_fin);
     $start->setDate((int)$start->format('Y'), (int)$start->format('n'), 1);
     while ($start <= $end) {
-        $y = (int)$start->format('Y');
-        $m = (int)$start->format('n');
-        $ld = (int)$start->format('t');
-        $fm = new DateTime(sprintf('%04d-%02d-%02d', $y, $m, $ld));
-        if ($fm > $end) $fm = clone $end;
-        $fs = $start->format('Y-m-d');
-        $periodos[] = [
-            'fecha_inicio' => $fs,
-            'fecha_fin' => $fm->format('Y-m-d'),
-            'monto' => get_monto_trabajador($tipo, $fs, $monto_pers)
-        ];
-        $start->modify('first day of next month');
-    }
+    $y = (int)$start->format('Y');
+    $m = (int)$start->format('n');
+    $ld = (int)$start->format('t');
+    $fm = new DateTime(sprintf('%04d-%02d-%02d', $y, $m, $ld));
+    $fs = $start->format('Y-m-d');
+    $periodos[] = [
+        'fecha_inicio' => $fs,
+        'fecha_fin' => $fm->format('Y-m-d'),
+        'monto' => get_monto_trabajador($tipo, $fs, $monto_pers)
+    ];
+    $start->modify('first day of next month');
+}
     return $periodos;
 }
 
