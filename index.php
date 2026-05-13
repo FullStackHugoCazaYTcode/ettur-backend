@@ -17,6 +17,7 @@ if (!headers_sent()) {
 
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
+date_default_timezone_set('America/Lima');
 
 try {
     require_once __DIR__ . '/config/database.php';
